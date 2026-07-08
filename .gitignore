@@ -1,0 +1,8 @@
+# Build artifacts
+io_test
+*.o
+*.out
+build/
+
+# Database files generated during testing
+*.db
