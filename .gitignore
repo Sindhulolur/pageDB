@@ -1,5 +1,8 @@
 # Build artifacts
 io_test
+test_page
+test_*
+!test_*.cpp
 *.o
 *.out
 build/
