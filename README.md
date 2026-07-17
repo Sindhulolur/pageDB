@@ -32,3 +32,58 @@ Too small (e.g. 1 byte): every read/write becomes its own disk I/O operation, or
 Too large (e.g. 1MB): a single small update wastes huge I/O bandwidth and buffer pool memory rewriting/reading far more than needed, and one pinned page could occupy a disproportionate share of the entire buffer pool.
 
 4KB (or a small multiple of it) historically matches the OS's own virtual memory page size, and for spinning disks roughly matched a reasonable unit of sequential transfer relative to seek overhead. It's the sweet spot: small enough to avoid waste on small updates, large enough to amortize per-I/O overhead and keep related data together for locality. This is a tunable trade-off, not a universal law — Postgres, for instance, uses 8KB.
+
+## B+ Tree
+
+### Node layout (on-disk page format)
+Each node is a fixed-size `Page` wrapped by `BPlusTreeNode`:
+
+| Field        | Offset                          | Notes                          |
+|--------------|----------------------------------|---------------------------------|
+| is_leaf      | PAGE_HEADER_SIZE                | 1 byte                         |
+| num_keys     | PAGE_HEADER_SIZE + 1            | uint32_t                       |
+| parent_id    | PAGE_HEADER_SIZE + 5            | uint32_t                       |
+| keys[]       | PAGE_HEADER_SIZE + 9            | MAX_KEYS_PER_NODE (3) x key_t  |
+| values[] / children[] | after keys[]           | leaf: value_t values; internal: page_id_t children (same offset, reused) |
+| next_leaf_id | after values[]/children[]        | leaf-only, forms the leaf linked list |
+
+`MAX_KEYS_PER_NODE = 3` — kept small deliberately for correctness-first
+development; not tuned for real fanout yet.
+
+### Insert
+Descends like `Search`. If the target leaf has room, inserts directly
+(sorted, shifting elements). If the leaf is full, `SplitLeaf` runs:
+splits the (n+1) sorted keys/values in half, writes left half back to
+the original page, right half to a new page, links `next_leaf_id`, and
+returns a promoted key (copied) + new sibling page_id.
+
+That result propagates up via `InsertRecursive`'s return value. Each
+ancestor either absorbs the new (key, child_id) pair or itself
+overflows and splits via `SplitInternal` (promoted key is *removed*,
+not copied, since internal nodes have no value slot). If the split
+reaches the top, `Insert()` allocates a brand new root with the
+promoted key and the two halves as children — this is the only way
+tree height grows.
+
+**Duplicate key policy:** rejected. Inserting an existing key leaves
+the original value untouched and does not modify the tree.
+
+### Search
+Standard root-to-leaf descent using `FindChildIndex` (first key
+strictly greater than the search key determines which child to
+follow). Leaf is scanned linearly for an exact match.
+
+### RangeScan
+Descends to the leaf containing `start`, then walks the leaf linked
+list via `next_leaf_id`, collecting all (key, value) pairs with
+`start <= key <= end`, stopping once a key exceeds `end` or the list
+ends. This is what makes ordered range queries cheap without
+revisiting internal nodes.
+
+### Testing
+- `test_bplus_tree_insert.cpp` / `_search.cpp` — Day 2/3 happy path
+- `test_bplus_tree_split.cpp` — single leaf split + new root
+- `test_bplus_tree_split_internal.cpp` — 2-level split, hand-traced
+- `test_bplus_tree_stress.cpp` — 10k random inserts, sequential
+  inserts, empty-tree first insert, duplicate rejection, full and
+  partial range scans
