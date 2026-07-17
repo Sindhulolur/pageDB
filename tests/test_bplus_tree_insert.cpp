@@ -19,7 +19,7 @@ int main() {
         bpm.UnpinPage(root_id, true);
     }
 
-    BPlusTree tree(&bpm, root_id);
+    BPlusTree tree(&bpm, &dm, &root_id);
 
     // Insert 3 keys in NON-sorted order — MAX_KEYS_PER_NODE is 3, so this
     // fills the leaf exactly to capacity without overflowing (Day 3 scope).
