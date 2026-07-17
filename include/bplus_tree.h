@@ -10,14 +10,14 @@ public:
     BPlusTree(BufferPool* bpm, page_id_t root_page_id)
         : bpm_(bpm), root_page_id_(root_page_id) {}
 
-    // Returns true and sets *value if key is found, false otherwise.
     bool Search(key_t key, value_t* value);
-
-    // Collects all (key, value) pairs with start <= key <= end, in order.
     std::vector<std::pair<key_t, value_t>> RangeScan(key_t start, key_t end);
 
+    // Inserts key/value into the correct leaf. Does NOT handle overflow yet
+    // (that's Day 4) — caller must ensure the target leaf has room.
+    void Insert(key_t key, value_t value);
+
 private:
-    // Given an internal node and a key, returns which child index to descend into.
     uint32_t FindChildIndex(BPlusTreeNode& node, key_t key);
 
     BufferPool* bpm_;

@@ -1,15 +1,13 @@
 #include "../include/bplus_tree.h"
 
 uint32_t BPlusTree::FindChildIndex(BPlusTreeNode& node, key_t key) {
-    // Linear scan for now — correctness first, binary search is a trivial
-    // optimization to swap in later since num_keys is small either way.
     uint32_t num_keys = node.GetNumKeys();
     for (uint32_t i = 0; i < num_keys; i++) {
         if (key < node.GetKeyAt(i)) {
-            return i;  // descend into child[i]
+            return i;
         }
     }
-    return num_keys;  // key >= all keys -> descend into the last child
+    return num_keys;
 }
 
 bool BPlusTree::Search(key_t key, value_t* value) {
@@ -18,12 +16,11 @@ bool BPlusTree::Search(key_t key, value_t* value) {
     while (true) {
         Page* page = bpm_->FetchPage(current_page_id);
         if (page == nullptr) {
-            return false;  // shouldn't normally happen, but fail safely
+            return false;
         }
         BPlusTreeNode node(page);
 
         if (node.IsLeaf()) {
-            // Linear scan the leaf for an exact match.
             uint32_t num_keys = node.GetNumKeys();
             for (uint32_t i = 0; i < num_keys; i++) {
                 if (node.GetKeyAt(i) == key) {
@@ -33,14 +30,11 @@ bool BPlusTree::Search(key_t key, value_t* value) {
                 }
             }
             bpm_->UnpinPage(current_page_id, false);
-            return false;  // reached a leaf, key not present
+            return false;
         }
 
-        // Internal node: find which child to descend into, then move on.
         uint32_t child_index = FindChildIndex(node, key);
         page_id_t child_page_id = node.GetChildAt(child_index);
-
-        // Unpin the parent BEFORE moving to the child — we're done with it.
         bpm_->UnpinPage(current_page_id, false);
         current_page_id = child_page_id;
     }
@@ -49,7 +43,6 @@ bool BPlusTree::Search(key_t key, value_t* value) {
 std::vector<std::pair<key_t, value_t>> BPlusTree::RangeScan(key_t start, key_t end) {
     std::vector<std::pair<key_t, value_t>> results;
 
-    // Step 1: descend like Search(start) to find the correct starting leaf.
     page_id_t current_page_id = root_page_id_;
     while (true) {
         Page* page = bpm_->FetchPage(current_page_id);
@@ -57,7 +50,7 @@ std::vector<std::pair<key_t, value_t>> BPlusTree::RangeScan(key_t start, key_t e
 
         if (node.IsLeaf()) {
             bpm_->UnpinPage(current_page_id, false);
-            break;  // current_page_id now holds the starting leaf's id
+            break;
         }
 
         uint32_t child_index = FindChildIndex(node, start);
@@ -66,7 +59,6 @@ std::vector<std::pair<key_t, value_t>> BPlusTree::RangeScan(key_t start, key_t e
         current_page_id = child_page_id;
     }
 
-    // Step 2: walk forward via next_leaf_id, collecting keys in [start, end].
     while (current_page_id != 0 || results.empty()) {
         Page* page = bpm_->FetchPage(current_page_id);
         if (page == nullptr) break;
@@ -92,4 +84,45 @@ std::vector<std::pair<key_t, value_t>> BPlusTree::RangeScan(key_t start, key_t e
     }
 
     return results;
+}
+
+void BPlusTree::Insert(key_t key, value_t value) {
+    // Step 1: descend to the correct leaf, exactly like Search does.
+    page_id_t current_page_id = root_page_id_;
+
+    while (true) {
+        Page* page = bpm_->FetchPage(current_page_id);
+        BPlusTreeNode node(page);
+
+        if (node.IsLeaf()) {
+            // Step 2: find the correct sorted insertion position.
+            uint32_t num_keys = node.GetNumKeys();
+            uint32_t insert_pos = 0;
+            while (insert_pos < num_keys && node.GetKeyAt(insert_pos) < key) {
+                insert_pos++;
+            }
+
+            // Step 3: shift everything from insert_pos onward one slot to
+            // the right, to make room. Must shift from the END backward,
+            // or we'd overwrite values before reading them.
+            for (uint32_t i = num_keys; i > insert_pos; i--) {
+                node.SetKeyAt(i, node.GetKeyAt(i - 1));
+                node.SetValueAt(i, node.GetValueAt(i - 1));
+            }
+
+            // Step 4: place the new key/value and update the count.
+            node.SetKeyAt(insert_pos, key);
+            node.SetValueAt(insert_pos, value);
+            node.SetNumKeys(num_keys + 1);
+
+            bpm_->UnpinPage(current_page_id, true);  // dirty: we modified it
+            return;
+        }
+
+        // Internal node: descend further, same as Search.
+        uint32_t child_index = FindChildIndex(node, key);
+        page_id_t child_page_id = node.GetChildAt(child_index);
+        bpm_->UnpinPage(current_page_id, false);
+        current_page_id = child_page_id;
+    }
 }
